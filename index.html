@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Three.js Rapier Room</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+      }
+      #info {
+        position: absolute;
+        top: 10px;
+        width: 100%;
+        text-align: center;
+        color: #ffffff;
+        font-family: sans-serif;
+        z-index: 1;
+      }
+      #start {
+        padding: 10px 20px;
+        font-size: 20px;
+        cursor: pointer;
+      }
+    </style>
+
+    <!-- Map bare specifiers used in src/main.js to CDN modules so we avoid bundler issues -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.174.0/three.module.min.js",
+          "three/addons/": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.174.0/examples/jsm/",
+          "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/0.1.2/spark.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="info"><button id="start">Click to play</button></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html> 
