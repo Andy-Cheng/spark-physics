@@ -66,12 +66,12 @@ async function init() {
 	scene.add(hemi);
 
 	const dir = new THREE.DirectionalLight(0xffe6cc, 0.3); // Warm directional light, slightly increased intensity
-	dir.position.set(-3, 10, -10);
+	dir.position.set(3, 10, -5);
 	scene.add(dir);
 	
 	// Add atmospheric point light
 	const pointLight = new THREE.PointLight(0xffa500, 2.0, 10); // Orange-yellow, bright intensity, 10 unit range
-	pointLight.position.set(-2, -1.5, 2.5);
+	pointLight.position.set(-3.2, -1., 4.5);
 	scene.add(pointLight);
 
 	// Rapier physics world
@@ -900,34 +900,33 @@ async function init() {
 
 			// Check if velocity direction changed significantly (indicating a bounce)
 			const velocityChange = currentVelVec.clone().sub(lastVelVec);
-			if (velocityChange.length() > 2.0) {
-				// Threshold for bounce detection
+			if (velocityChange.length() > 2.0) { // Threshold for bounce detection
+				console.log(`Collider mesh bounce at position: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)})`);
+				console.log(`Velocity change: (${velocityChange.x.toFixed(2)}, ${velocityChange.y.toFixed(2)}, ${velocityChange.z.toFixed(2)})`);
 				playBounceSound(pos, currentVelVec);
-
+				
 				// Check if projectile hit the orc
 				const projectilePos = new THREE.Vector3(pos.x, pos.y, pos.z);
 				for (const { bone } of orcBoneColliders) {
 					const bonePos = new THREE.Vector3();
 					bone.getWorldPosition(bonePos);
 					const distance = projectilePos.distanceTo(bonePos);
-
+					
 					// If projectile is close to orc bone, trigger voice line
-					if (distance < 0.8) {
-						// Collision threshold
+					if (distance < 0.8) { // Collision threshold
 						playOrcVoiceLine();
 						break; // Only play one voice line per hit
 					}
 				}
-
+				
 				// Check if projectile hit the bartender
 				for (const { bone } of bartenderBoneColliders) {
 					const bonePos = new THREE.Vector3();
 					bone.getWorldPosition(bonePos);
 					const distance = projectilePos.distanceTo(bonePos);
-
+					
 					// If projectile is close to bartender bone, trigger voice line
-					if (distance < 0.8) {
-						// Collision threshold
+					if (distance < 0.8) { // Collision threshold
 						playBartenderVoiceLine();
 						break; // Only play one voice line per hit
 					}
