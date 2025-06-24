@@ -2,11 +2,17 @@
 
 A showcase of **Spark** (Gaussian Splats) + **Rapier Physics** + **Three.js** integration, demonstrating how to combine splat rendering with a collider mesh for simple physics.
 
+This demo serves as an example of:
+- Integrating Gaussian splat rendering with traditional 3D graphics
+- Setting up physics simulation with mesh colliders
+- Creating interactive audio systems with Web Audio API
+- Implementing character animation with physics-based interactions
+
 ## 🌟 Features
 
-* **Gaussian Splat Rendering**: High-quality photorealistic environment using Spark library
+* **Gaussian Splat Rendering**: Splat scene rendering using Spark library
 * **Physics Simulation**: Realistic projectile physics and collision detection with Rapier
-* **Animated Characters**: Interactive NPCs with bone-level collision detection
+* **Animated Characters**: Character meshes with bone-level collision detection
 * **Spatial Audio**: Distance-based volume and velocity-based pitch modulation
 * **Debug Visualization**: Toggle between splat rendering and collision mesh wireframes
 * **First-Person Controls**: Smooth pointer-lock movement with WASD + mouse look
@@ -18,14 +24,6 @@ A showcase of **Spark** (Gaussian Splats) + **Rapier Physics** + **Three.js** in
 * **R/F**: Fly up and down
 * **Space**: Toggle debug mode (collision mesh vs. splat rendering)
 
-## 📚 Educational Value
-
-This demo serves as a practical example of:
-- Integrating Gaussian splat rendering with traditional 3D graphics
-- Setting up physics simulation with trimesh colliders
-- Creating interactive audio systems with Web Audio API
-- Implementing character animation with physics-based interactions
-- Building debug tools for 3D development
 
 ## Getting started
 
