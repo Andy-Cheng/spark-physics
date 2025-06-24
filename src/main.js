@@ -1,30 +1,257 @@
+/**
+ * Interactive Tavern Demo - Three.js + Rapier Physics + Gaussian Splats
+ * 
+ * This demo showcases the integration of:
+ * - Spark library for Gaussian Splat rendering (@sparkjsdev/spark)
+ * - Rapier physics engine for realistic collision detection
+ * - Three.js for 3D graphics and scene management
+ * - Web Audio API for spatial audio and interactive sound effects
+ * 
+ * Features:
+ * - First-person controls with pointer lock
+ * - Physics-based projectile shooting
+ * - Animated characters with bone-level collision detection
+ * - Gaussian splat environment rendering with collision mesh fallback
+ * - Dynamic audio system with distance-based volume and velocity-based pitch
+ * - Debug mode for visualizing collision spheres and transform controls
+ * 
+ * Controls:
+ * - Click to enter first-person mode
+ * - WASD: Move around
+ * - R/F: Fly up/down
+ * - Click: Shoot projectiles
+ * - Space: Toggle debug mode (shows collision mesh instead of splats)
+ */
+
 import * as RAPIER from "@dimforge/rapier3d-compat";
 import { SplatMesh } from "@sparkjsdev/spark";
 import * as THREE from "three";
 import { AnimationMixer } from "three";
 import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
-import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-async function init() {
+// ===================================================================================================
+// CONFIGURATION
+// ===================================================================================================
+
+const CONFIG = {
+	// Physics
+	GRAVITY: { x: 0, y: -9.81, z: 0 },
+	RAPIER_INIT_TIMEOUT: 10000,
+
+	// Movement
+	MOVE_SPEED: 5,
+	PROJECTILE_SPEED: 15,
+
+	// Audio
+	VOICE_COOLDOWN: 1.0,
+	MUSIC_VOLUME: 0.15,
+	VOICE_VOLUME: 0.4,
+
+	// Physics Objects
+	PROJECTILE_RADIUS: 0.2,
+	PROJECTILE_RESTITUTION: 0.9,
+	ENVIRONMENT_RESTITUTION: 0.6,
+	BONE_COLLIDER_RADIUS: 0.3,
+
+	// Audio Processing
+	BOUNCE_DETECTION_THRESHOLD: 2.0,
+	CHARACTER_HIT_DISTANCE: 0.8,
+	VELOCITY_PITCH_RANGE: { min: 0.9, max: 1.1 },
+	VOLUME_DISTANCE_MAX: 10,
+
+	// Assets
+	ENVIRONMENT: {
+		MESH: "tavern_mesh.glb",
+		SPLATS: "tavern_splats.spz",
+		SPLAT_SCALE: 3,
+	},
+
+	CHARACTERS: {
+		ORC: {
+			MODEL: "orc.glb",
+			POSITION: [-4, -1.5, 2],
+			ROTATION: Math.PI / 2,
+			SCALE: [1.5, 1.5, 1.5],
+		},
+		BARTENDER: {
+			MODEL: "Bartending.fbx",
+			POSITION: [1, -1.5, 3],
+			ROTATION: -Math.PI / 2,
+			SCALE: [0.01, 0.01, 0.01],
+		},
+	},
+
+	AUDIO_FILES: {
+		BOUNCE: "bounce.mp3",
+		BACKGROUND_MUSIC: "song.mp3",
+		ORC_VOICES: [
+			"lines/rocks.mp3",
+			"lines/mushroom.mp3",
+			"lines/watch.mp3",
+			"lines/vex.mp3",
+		],
+		BARTENDER_VOICES: [
+			"lines/working.mp3",
+			"lines/juggler.mp3",
+			"lines/drink.mp3",
+		],
+	},
+};
+
+// ===================================================================================================
+// UTILITY FUNCTIONS
+// ===================================================================================================
+
+/**
+ * Configures materials to respond properly to lighting
+ * Converts MeshBasicMaterial to MeshStandardMaterial and adjusts properties
+ */
+function setupMaterialsForLighting(object, brightnessMultiplier = 1.0) {
+	object.traverse((child) => {
+		if (child.isMesh && child.material) {
+			const materials = Array.isArray(child.material)
+				? child.material
+				: [child.material];
+			const newMaterials = [];
+
+			for (const material of materials) {
+				// Remove emissive properties
+				if (material.emissive) material.emissive.setHex(0x000000);
+				if (material.emissiveIntensity !== undefined)
+					material.emissiveIntensity = 0;
+
+				// Convert basic materials to standard materials for lighting
+				if (material.type === "MeshBasicMaterial") {
+					const newMaterial = new THREE.MeshStandardMaterial({
+						color: material.color,
+						map: material.map,
+						normalMap: material.normalMap,
+						roughness: 0.8,
+						metalness: 0.1,
+					});
+					newMaterials.push(newMaterial);
+				} else {
+					// Adjust existing material properties
+					if (material.roughness !== undefined) material.roughness = 0.8;
+					if (material.metalness !== undefined) material.metalness = 0.1;
+
+					// Apply brightness multiplier
+					if (material.color && brightnessMultiplier !== 1.0) {
+						const currentColor = material.color.clone();
+						currentColor.multiplyScalar(brightnessMultiplier);
+						material.color = currentColor;
+					}
+
+					// Fix transparency issues
+					if (material.transparent && material.opacity === 1) {
+						material.transparent = false;
+					}
+
+					newMaterials.push(material);
+				}
+			}
+
+			// Update mesh material reference
+			child.material = Array.isArray(child.material)
+				? newMaterials
+				: newMaterials[0];
+		}
+	});
+}
+
+/**
+ * Creates physics colliders for character bones
+ */
+function createBoneColliders(character, world) {
+	const boneColliders = [];
+	character.traverse((child) => {
+		if (child.isBone) {
+			const bonePos = new THREE.Vector3();
+			child.getWorldPosition(bonePos);
+
+			const colliderDesc = RAPIER.ColliderDesc.ball(
+				CONFIG.BONE_COLLIDER_RADIUS,
+			);
+			const bodyDesc =
+				RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
+					bonePos.x,
+					bonePos.y,
+					bonePos.z,
+				);
+
+			const body = world.createRigidBody(bodyDesc);
+			world.createCollider(colliderDesc, body);
+
+			boneColliders.push({ bone: child, body });
+		}
+	});
+	return boneColliders;
+}
+
+/**
+ * Loads audio files and returns decoded audio buffers
+ */
+async function loadAudioFiles(audioContext, fileList) {
 	try {
-		// Initialize Rapier WASM with a timeout
+		const buffers = await Promise.all(
+			fileList.map((file) =>
+				fetch(file)
+					.then((response) => response.arrayBuffer())
+					.then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer)),
+			),
+		);
+		return buffers;
+	} catch (error) {
+		console.error("Error loading audio files:", error);
+		return [];
+	}
+}
+
+/**
+ * Plays audio with Web Audio API
+ */
+function playAudio(audioContext, buffer, volume = 1.0, playbackRate = 1.0) {
+	if (!audioContext || !buffer) return;
+
+	const source = audioContext.createBufferSource();
+	const gainNode = audioContext.createGain();
+
+	source.buffer = buffer;
+	source.connect(gainNode);
+	gainNode.connect(audioContext.destination);
+
+	gainNode.gain.value = volume;
+	source.playbackRate.value = playbackRate;
+	source.start(0);
+
+	return source;
+}
+
+// ===================================================================================================
+// MAIN APPLICATION
+// ===================================================================================================
+
+async function init() {
+	// ===== RAPIER PHYSICS INITIALIZATION =====
+	try {
 		const initPromise = RAPIER.init();
 		const timeoutPromise = new Promise((_, reject) =>
 			setTimeout(
 				() => reject(new Error("Rapier initialization timeout")),
-				10000,
+				CONFIG.RAPIER_INIT_TIMEOUT,
 			),
 		);
 		await Promise.race([initPromise, timeoutPromise]);
-		console.log("Rapier initialized successfully");
+		console.log("✓ Rapier physics initialized");
 	} catch (error) {
 		console.error("Failed to initialize Rapier:", error);
-		// Continue without physics for now
+		// Continue without physics - the demo will still show the environment
 	}
 
-	// Three.js scene setup
+	// ===== THREE.JS SCENE SETUP =====
 	const scene = new THREE.Scene();
 	scene.background = new THREE.Color(0x202020);
 
@@ -34,11 +261,7 @@ async function init() {
 		0.1,
 		1000,
 	);
-	// print camera's extrinsic matrix
-	console.log(camera.matrix);
-	// camera.position.set(0, 1.6, 0); // Eye-level height
-	// Turn the camera around 180 degrees
-	camera.rotation.y = Math.PI;
+	camera.rotation.y = Math.PI; // Start facing opposite direction
 
 	const renderer = new THREE.WebGLRenderer();
 	renderer.setSize(window.innerWidth, window.innerHeight);
@@ -46,327 +269,178 @@ async function init() {
 	renderer.outputColorSpace = THREE.SRGBColorSpace;
 	document.body.appendChild(renderer.domElement);
 
-	// Pointer-lock first-person controls
-	const controls = new PointerLockControls(camera, document.body);
+	// ===== LIGHTING SETUP =====
+	// Warm hemisphere lighting
+	const hemiLight = new THREE.HemisphereLight(0xfff4e6, 0x2a1a0a, 0.5);
+	hemiLight.position.set(0, 20, 0);
+	scene.add(hemiLight);
 
-	// UI to enter pointer-lock
-	const startButton = document.getElementById("start");
-	startButton.addEventListener("click", () => controls.lock());
+	// Warm directional lighting
+	const dirLight = new THREE.DirectionalLight(0xffe6cc, 0.3);
+	dirLight.position.set(3, 10, -5);
+	scene.add(dirLight);
 
-	controls.addEventListener("lock", () => {
-		document.getElementById("info").style.display = "none";
-	});
-	controls.addEventListener("unlock", () => {
-		document.getElementById("info").style.display = "";
-	});
-
-	// Basic lighting
-	const hemi = new THREE.HemisphereLight(0xfff4e6, 0x2a1a0a, 0.5); // Warm sky, dark ground, slightly increased intensity
-	hemi.position.set(0, 20, 0);
-	scene.add(hemi);
-
-	const dir = new THREE.DirectionalLight(0xffe6cc, 0.3); // Warm directional light, slightly increased intensity
-	dir.position.set(3, 10, -5);
-	scene.add(dir);
-	
-	// Add atmospheric point light
-	const pointLight = new THREE.PointLight(0xffa500, 2.0, 10); // Orange-yellow, bright intensity, 10 unit range
-	pointLight.position.set(-3.2, -1., 4.5);
+	// Atmospheric point light
+	const pointLight = new THREE.PointLight(0xffa500, 2.0, 10);
+	pointLight.position.set(-3.2, -1, 4.5);
 	scene.add(pointLight);
 
-	// Rapier physics world
-	const gravity = { x: 0, y: -9.81, z: 0 };
-	const world = new RAPIER.World(gravity);
+	// ===== PHYSICS WORLD =====
+	const world = new RAPIER.World(CONFIG.GRAVITY);
 
-	// --- Audio setup for bounce sounds ---
+	// ===== CONTROLS SETUP =====
+	const controls = new PointerLockControls(camera, document.body);
+
+	// UI elements
+	const startButton = document.getElementById("start");
+	const infoElement = document.getElementById("info");
+	const loadingElement = document.getElementById("loading");
+
+	startButton.addEventListener("click", () => controls.lock());
+	controls.addEventListener("lock", () => {
+		infoElement.style.display = "none";
+	});
+	controls.addEventListener("unlock", () => {
+		infoElement.style.display = "";
+	});
+
+	// ===== AUDIO SYSTEM =====
 	let audioContext = null;
-	let bounceSound = null;
-	let backgroundMusic = null;
+	const audioBuffers = {};
+	const voiceCooldowns = { orc: 0, bartender: 0 };
 	let musicSource = null;
-	let orcVoiceLines = []; // Array to store orc voice lines
-	let bartenderVoiceLines = []; // Array to store bartender voice lines
-	let orcVoiceCooldown = 0; // Cooldown timer for orc voice lines
-	let bartenderVoiceCooldown = 0; // Cooldown timer for bartender voice lines
 
-	// Initialize audio context (needs user interaction first)
 	function initAudio() {
-		if (audioContext) return; // Already initialized
+		if (audioContext) return;
 
 		audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-		// Load bounce sound
-		fetch("bounce.mp3")
-			.then((response) => response.arrayBuffer())
-			.then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
-			.then((audioBuffer) => {
-				bounceSound = audioBuffer;
-				console.log("Bounce sound loaded");
-			})
-			.catch((error) => console.error("Error loading bounce sound:", error));
+		// Load all audio files
+		Promise.all([
+			fetch(CONFIG.AUDIO_FILES.BOUNCE)
+				.then((response) => response.arrayBuffer())
+				.then((buffer) => audioContext.decodeAudioData(buffer))
+				.then((buffer) => {
+					audioBuffers.bounce = buffer;
+					return buffer;
+				}),
 
-		// Load orc voice lines
-		const orcVoiceLineFiles = [
-			"lines/rocks.mp3",
-			"lines/mushroom.mp3",
-			"lines/watch.mp3",
-			"lines/vex.mp3",
-		];
-		Promise.all(
-			orcVoiceLineFiles.map((file) =>
-				fetch(file)
-					.then((response) => response.arrayBuffer())
-					.then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer)),
+			loadAudioFiles(audioContext, CONFIG.AUDIO_FILES.ORC_VOICES).then(
+				(buffers) => {
+					audioBuffers.orcVoices = buffers;
+					return buffers;
+				},
 			),
-		)
-			.then((audioBuffers) => {
-				orcVoiceLines = audioBuffers;
-				console.log("Orc voice lines loaded:", orcVoiceLines.length);
-			})
-			.catch((error) => console.error("Error loading orc voice lines:", error));
 
-		// Load bartender voice lines
-		const bartenderVoiceLineFiles = [
-			"lines/working.mp3",
-			"lines/juggler.mp3",
-			"lines/drink.mp3",
-		];
-		Promise.all(
-			bartenderVoiceLineFiles.map((file) =>
-				fetch(file)
-					.then((response) => response.arrayBuffer())
-					.then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer)),
+			loadAudioFiles(audioContext, CONFIG.AUDIO_FILES.BARTENDER_VOICES).then(
+				(buffers) => {
+					audioBuffers.bartenderVoices = buffers;
+					return buffers;
+				},
 			),
-		)
-			.then((audioBuffers) => {
-				bartenderVoiceLines = audioBuffers;
-				console.log(
-					"Bartender voice lines loaded:",
-					bartenderVoiceLines.length,
-				);
-			})
-			.catch((error) =>
-				console.error("Error loading bartender voice lines:", error),
-			);
 
-		// Load and start background music
-		fetch("song.mp3")
-			.then((response) => response.arrayBuffer())
-			.then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
-			.then((audioBuffer) => {
-				backgroundMusic = audioBuffer;
-				startBackgroundMusic();
-				console.log("Background music loaded and started");
+			fetch(CONFIG.AUDIO_FILES.BACKGROUND_MUSIC)
+				.then((response) => response.arrayBuffer())
+				.then((buffer) => audioContext.decodeAudioData(buffer))
+				.then((buffer) => {
+					audioBuffers.backgroundMusic = buffer;
+					startBackgroundMusic();
+				}),
+		])
+			.then(() => {
+				console.log("✓ Audio system initialized");
 			})
-			.catch((error) =>
-				console.error("Error loading background music:", error),
-			);
+			.catch((error) => {
+				console.error("Audio loading error:", error);
+			});
 	}
 
-	// Start background music loop
 	function startBackgroundMusic() {
-		if (!audioContext || !backgroundMusic) return;
+		if (!audioContext || !audioBuffers.backgroundMusic) return;
 
 		function playMusic() {
-			musicSource = audioContext.createBufferSource();
-			const musicGain = audioContext.createGain();
-
-			musicSource.buffer = backgroundMusic;
-			musicSource.connect(musicGain);
-			musicGain.connect(audioContext.destination);
-
-			// Set tasteful volume (adjust as needed)
-			musicGain.gain.value = 0.15; // 15% volume
-
-			musicSource.start(0);
-
-			// Loop the music
-			musicSource.onended = playMusic;
+			musicSource = playAudio(
+				audioContext,
+				audioBuffers.backgroundMusic,
+				CONFIG.MUSIC_VOLUME,
+			);
+			musicSource.onended = playMusic; // Loop the music
 		}
-
 		playMusic();
 	}
 
-	// Play random orc voice line with cooldown
-	function playOrcVoiceLine() {
-		if (!audioContext || orcVoiceLines.length === 0 || orcVoiceCooldown > 0)
-			return;
+	function playVoiceLine(character) {
+		const cooldownKey = character;
+		if (voiceCooldowns[cooldownKey] > 0) return;
 
-		const randomIndex = Math.floor(Math.random() * orcVoiceLines.length);
-		const voiceLine = orcVoiceLines[randomIndex];
+		const voiceBuffers = audioBuffers[`${character}Voices`];
+		if (!voiceBuffers || voiceBuffers.length === 0) return;
 
-		const source = audioContext.createBufferSource();
-		const gainNode = audioContext.createGain();
+		const randomBuffer =
+			voiceBuffers[Math.floor(Math.random() * voiceBuffers.length)];
+		playAudio(audioContext, randomBuffer, CONFIG.VOICE_VOLUME);
 
-		source.buffer = voiceLine;
-		source.connect(gainNode);
-		gainNode.connect(audioContext.destination);
-
-		// Set volume for voice line (adjust as needed)
-		gainNode.gain.value = 0.4; // 40% volume
-
-		// Set cooldown to prevent overlapping voice lines (1 second)
-		orcVoiceCooldown = 1.0;
-
-		source.start(0);
-		console.log(`Orc says line ${randomIndex + 1}`);
+		voiceCooldowns[cooldownKey] = CONFIG.VOICE_COOLDOWN;
+		console.log(`${character} speaks`);
 	}
 
-	// Play random bartender voice line with cooldown
-	function playBartenderVoiceLine() {
-		if (
-			!audioContext ||
-			bartenderVoiceLines.length === 0 ||
-			bartenderVoiceCooldown > 0
-		)
-			return;
+	function playBounceSound(position, velocity) {
+		if (!audioBuffers.bounce) return;
 
-		const randomIndex = Math.floor(Math.random() * bartenderVoiceLines.length);
-		const voiceLine = bartenderVoiceLines[randomIndex];
+		// Calculate distance-based volume
+		const distance = camera.position.distanceTo(position);
+		let volume = Math.max(
+			0.1,
+			1.0 * (1 - distance / CONFIG.VOLUME_DISTANCE_MAX),
+		);
 
-		const source = audioContext.createBufferSource();
-		const gainNode = audioContext.createGain();
-
-		source.buffer = voiceLine;
-		source.connect(gainNode);
-		gainNode.connect(audioContext.destination);
-
-		// Set volume for voice line (adjust as needed)
-		gainNode.gain.value = 0.4; // 40% volume
-
-		// Set cooldown to prevent overlapping voice lines (1 second)
-		bartenderVoiceCooldown = 1.0;
-
-		source.start(0);
-		console.log(`Bartender says line ${randomIndex + 1}`);
-	}
-
-	// Play bounce sound with distance-based volume, velocity-based pitch, and random perturbation
-	function playBounceSound(collisionPosition = null, impactVelocity = null) {
-		if (!audioContext || !bounceSound) return;
-
-		const source = audioContext.createBufferSource();
-		const gainNode = audioContext.createGain();
-
-		source.buffer = bounceSound;
-		source.connect(gainNode);
-		gainNode.connect(audioContext.destination);
-
-		// Calculate velocity-based pitch with random perturbation
-		let pitchVariation = 1.0; // Base pitch
-
-		if (impactVelocity) {
-			const velocityMagnitude = impactVelocity.length();
-			const minVelocity = 2.0;
-			const maxVelocity = 20.0;
-
-			// Clamp velocity to our range
-			const clampedVelocity = Math.max(
-				minVelocity,
-				Math.min(maxVelocity, velocityMagnitude),
-			);
-
-			// Velocity-based pitch: higher velocity = higher pitch
-			const velocityPitch =
-				0.9 +
-				((clampedVelocity - minVelocity) / (maxVelocity - minVelocity)) * 0.2; // Range: 0.8 to 1.2
-
-			// Add small random perturbation (±3%)
-			const randomPerturbation = 0.97 + Math.random() * 0.06; // Range: 0.97 to 1.03
-
-			pitchVariation = velocityPitch * randomPerturbation;
-		} else {
-			// Fallback to small random variation if no velocity
-			pitchVariation = 0.95 + Math.random() * 0.1;
+		// Calculate velocity-based pitch and volume
+		let pitch = 1.0;
+		if (velocity) {
+			const speed = velocity.length();
+			const normalizedSpeed = Math.min(speed / 20, 1.0);
+			volume *= 0.3 + normalizedSpeed * 0.7;
+			pitch =
+				CONFIG.VELOCITY_PITCH_RANGE.min +
+				normalizedSpeed *
+					(CONFIG.VELOCITY_PITCH_RANGE.max - CONFIG.VELOCITY_PITCH_RANGE.min);
+			pitch *= 0.97 + Math.random() * 0.06; // Add slight random variation
 		}
 
-		source.playbackRate.value = pitchVariation;
-
-		// Calculate volume based on distance from camera and impact velocity
-		let volume = 0.5; // Default volume
-
-		if (collisionPosition) {
-			const distance = camera.position.distanceTo(collisionPosition);
-			const maxDistance = 10; // Maximum distance for full volume
-			const minVolume = 0.1; // Minimum volume (10%)
-			const maxVolume = 1.0; // Maximum volume (100%)
-
-			// Distance-based volume falloff
-			const distanceVolume = Math.max(
-				minVolume,
-				maxVolume * (1 - distance / maxDistance),
-			);
-
-			// Velocity-based volume multiplier
-			let velocityMultiplier = 1.0;
-			if (impactVelocity) {
-				const velocityMagnitude = impactVelocity.length();
-				const minVelocity = 2.0; // Minimum velocity for sound
-				const maxVelocity = 20.0; // Velocity for maximum volume
-
-				// Clamp velocity to our range and calculate multiplier
-				const clampedVelocity = Math.max(
-					minVelocity,
-					Math.min(maxVelocity, velocityMagnitude),
-				);
-				velocityMultiplier =
-					(clampedVelocity - minVelocity) / (maxVelocity - minVelocity);
-				velocityMultiplier = 0.3 + velocityMultiplier * 0.7; // Range: 0.3 to 1.0
-			}
-
-			// Combine distance and velocity factors
-			volume = distanceVolume * velocityMultiplier;
-
-			console.log(
-				`Bounce at distance ${distance.toFixed(1)}, velocity: ${impactVelocity ? impactVelocity.length().toFixed(1) : "N/A"}, volume: ${volume.toFixed(2)}, pitch: ${pitchVariation.toFixed(2)}`,
-			);
-		}
-
-		gainNode.gain.value = volume;
-		source.start(0);
+		playAudio(audioContext, audioBuffers.bounce, volume, pitch);
 	}
 
 	// Initialize audio on first user interaction
 	document.addEventListener("click", initAudio, { once: true });
 	document.addEventListener("keydown", initAudio, { once: true });
 
-	// --- Load environment mesh and create collider ---
-	let env = null; // Collider mesh reference
-	let splat = null; // SplatMesh reference
-	let splatsLoaded = false; // Track if splats have finished loading
+	// ===== ENVIRONMENT LOADING =====
+	let environment = null;
+	let splatMesh = null;
+	let splatsLoaded = false;
 
-	// Show loading indicator
-	const loadingElement = document.getElementById("loading");
 	loadingElement.style.display = "block";
 
-	const loader = new GLTFLoader();
-	const mesh_file = "tavern_mesh.glb";
-	// const mesh_file = "office.glb";
-	// const mesh_file = "kitchen.glb";
-	// const mesh_file = "spaceship.glb";
-	loader.load(mesh_file, (gltf) => {
-		env = gltf.scene;
-		scene.add(env);
-		// Keep mesh visible initially until splats load
+	// Load collision mesh
+	const gltfLoader = new GLTFLoader();
+	gltfLoader.load(CONFIG.ENVIRONMENT.MESH, (gltf) => {
+		environment = gltf.scene;
+		scene.add(environment);
 
-		// Optionally, scale or rotate tavern env here if needed.
-		env.traverse((child) => {
+		// Create physics colliders from mesh geometry
+		environment.traverse((child) => {
 			if (child.isMesh) {
-				// Convert geometry to world coordinates so a single fixed body works.
-				const geo = child.geometry.clone();
+				const geometry = child.geometry.clone();
 				child.updateWorldMatrix(true, false);
-				geo.applyMatrix4(child.matrixWorld);
-				console.log("geo child matrix");
-				console.log(child.matrixWorld);
+				geometry.applyMatrix4(child.matrixWorld);
 
-				const posAttr = geo.attributes.position;
-				const vertices = new Float32Array(posAttr.array);
-
+				const vertices = new Float32Array(geometry.attributes.position.array);
 				let indices;
-				if (geo.index) {
-					indices = new Uint32Array(geo.index.array);
+
+				if (geometry.index) {
+					indices = new Uint32Array(geometry.index.array);
 				} else {
-					// Non-indexed geom: generate sequential indices
-					const count = posAttr.count;
+					const count = geometry.attributes.position.count;
 					indices = new Uint32Array(count);
 					for (let i = 0; i < count; i++) indices[i] = i;
 				}
@@ -374,622 +448,327 @@ async function init() {
 				const colliderDesc = RAPIER.ColliderDesc.trimesh(
 					vertices,
 					indices,
-				).setRestitution(0.6);
+				).setRestitution(CONFIG.ENVIRONMENT_RESTITUTION);
 				const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
 				world.createCollider(colliderDesc, body);
 			}
-
-			// print bounding box of child
-			const boundingBox = new THREE.Box3().setFromObject(child);
-			console.log("bounding box", boundingBox);
 		});
+
+		console.log("✓ Environment collision mesh loaded");
 	});
 
-	// --- Load gaussian splat scene ---
-	// const splat_file = "tavern_splats.ply";
-	const splat_file = "tavern_splats.spz";
-	// const splat_file = "office.ply";
-	// const splat_file = "kitchen.ply";
-	// const splat_file = "spaceship.ply";
-	splat = new SplatMesh({
-		url: splat_file,
+	// Load Gaussian splats
+	splatMesh = new SplatMesh({
+		url: CONFIG.ENVIRONMENT.SPLATS,
 		onLoad: () => {
-			console.log("Splat scene loaded. Total splats:", splat.numSplats);
-			console.log("splat scale after load", splat.scale);
-			console.log(splat);
+			console.log(`✓ Gaussian splats loaded (${splatMesh.numSplats} splats)`);
 
-			// Compute stats on splat centers
-			const minPos = new THREE.Vector3(
-				Number.POSITIVE_INFINITY,
-				Number.POSITIVE_INFINITY,
-				Number.POSITIVE_INFINITY,
-			);
-			const maxPos = new THREE.Vector3(
-				Number.NEGATIVE_INFINITY,
-				Number.NEGATIVE_INFINITY,
-				Number.NEGATIVE_INFINITY,
-			);
-			const sumPos = new THREE.Vector3(0, 0, 0);
-			const numSplats = splat.numSplats;
-
-			splat.packedSplats.forEachSplat(
-				(index, center, scales, quaternion, opacity, color) => {
-					// Update min
-					minPos.x = Math.min(minPos.x, center.x);
-					minPos.y = Math.min(minPos.y, center.y);
-					minPos.z = Math.min(minPos.z, center.z);
-
-					// Update max
-					maxPos.x = Math.max(maxPos.x, center.x);
-					maxPos.y = Math.max(maxPos.y, center.y);
-					maxPos.z = Math.max(maxPos.z, center.z);
-
-					// Accumulate sum
-					sumPos.add(center);
-				},
-			);
-
-			// Calculate mean by dividing sum by number of splats
-			const meanPos = sumPos.divideScalar(numSplats);
-
-			console.log("Splat position statistics:");
-			console.log("Min:", minPos);
-			console.log("Max:", maxPos);
-			console.log("Mean:", meanPos);
-
-			// Switch from mesh to splats now that they're loaded
 			splatsLoaded = true;
-			if (env) {
-				env.visible = false; // Hide the collider mesh
-			}
-			if (splat && !scene.getObjectById(splat.id)) {
-				scene.add(splat); // Add splats to scene if not already there
-			}
-
-			// Hide loading indicator
+			if (environment) environment.visible = false; // Hide collision mesh
+			scene.add(splatMesh);
 			loadingElement.style.display = "none";
 		},
 	});
-	console.log("splat scale", splat.scale);
-	const scale = 3;
-	splat.scale.set(scale, -scale, scale);
-	splat.position.set(0, 0, 0);
-	// Don't add splat to scene yet - wait until it's loaded
 
-	// --- Visibility toggle and scaling controls ---
-	const splatInScene = true; // Track if splat is in the scene
+	// Configure splat mesh
+	const { SPLAT_SCALE } = CONFIG.ENVIRONMENT;
+	splatMesh.scale.set(SPLAT_SCALE, -SPLAT_SCALE, SPLAT_SCALE);
+	splatMesh.position.set(0, 0, 0);
 
-	let debugMode = false;
-	let orcTransformControls = null;
-	let colliderVisuals = [];
-	let bartenderColliderVisuals = [];
+	// ===== CHARACTER LOADING =====
+	const characters = {};
+	const animationMixers = {};
+	const boneColliders = {};
 
-	window.addEventListener("keydown", (e) => {
-		// Toggle debug mode with Spacebar
-		if (e.code === "Space") {
-			debugMode = !debugMode;
-			if (env && splat && splatsLoaded) {
-				if (debugMode) {
-					// Show collider mesh, hide splats
-					env.visible = true;
-					if (scene.getObjectById(splat.id)) scene.remove(splat);
+	// Load Orc
+	gltfLoader.load(CONFIG.CHARACTERS.ORC.MODEL, (gltf) => {
+		const orc = gltf.scene;
+		const config = CONFIG.CHARACTERS.ORC;
 
-					// Attach TransformControls to orc
-					if (orc && !orcTransformControls) {
-						console.log("Attaching TransformControls to orc");
-						console.log("orc is Object3D:", orc instanceof THREE.Object3D);
-						orcTransformControls = new TransformControls(
-							camera,
-							renderer.domElement,
-						);
-						orcTransformControls.attach(orc);
-						orcTransformControls.size = 25.0;
-						orcTransformControls.enabled = true;
-						orcTransformControls.visible = true;
-						orcTransformControls.setMode("translate");
-						orcTransformControls.addEventListener("mouseDown", () =>
-							controls.unlock(),
-						);
-						renderer.render(scene, camera);
-					}
+		orc.rotation.y = config.ROTATION;
+		orc.scale.set(...config.SCALE);
+		orc.position.set(...config.POSITION);
+		scene.add(orc);
 
-					// Visualize collider spheres
-					if (orcBoneColliders.length > 0 && colliderVisuals.length === 0) {
-						for (const { bone } of orcBoneColliders) {
-							const pos = new THREE.Vector3();
-							bone.getWorldPosition(pos);
-							const sphereGeo = new THREE.SphereGeometry(0.3, 16, 16);
-							const sphereMat = new THREE.MeshBasicMaterial({
-								color: 0xff00ff,
-								wireframe: true,
-							});
-							const sphere = new THREE.Mesh(sphereGeo, sphereMat);
-							sphere.position.copy(pos);
-							scene.add(sphere);
-							colliderVisuals.push({ sphere, bone });
-						}
-					}
-					
-					// Visualize bartender collider spheres
-					if (bartenderBoneColliders.length > 0 && bartenderColliderVisuals.length === 0) {
-						for (const { bone } of bartenderBoneColliders) {
-							const pos = new THREE.Vector3();
-							bone.getWorldPosition(pos);
-							const sphereGeo = new THREE.SphereGeometry(0.3, 16, 16);
-							const sphereMat = new THREE.MeshBasicMaterial({
-								color: 0x00ffff, // Cyan color to distinguish from orc
-								wireframe: true,
-							});
-							const sphere = new THREE.Mesh(sphereGeo, sphereMat);
-							sphere.position.copy(pos);
-							scene.add(sphere);
-							bartenderColliderVisuals.push({ sphere, bone });
-						}
-					}
-				} else {
-					// Hide collider mesh, show splats
-					env.visible = false;
-					if (!scene.getObjectById(splat.id)) scene.add(splat);
+		setupMaterialsForLighting(orc);
 
-					// Remove TransformControls
-					if (orcTransformControls) {
-						scene.remove(orcTransformControls);
-						orcTransformControls.dispose();
-						orcTransformControls = null;
-					}
-
-					// Remove collider visuals
-					for (const { sphere } of colliderVisuals) {
-						scene.remove(sphere);
-					}
-					colliderVisuals = [];
-					
-					// Remove bartender collider visuals
-					for (const { sphere } of bartenderColliderVisuals) {
-						scene.remove(sphere);
-					}
-					bartenderColliderVisuals = [];
-				}
-			} else if (env && !splatsLoaded) {
-				// If splats haven't loaded yet, just toggle mesh visibility
-				env.visible = !env.visible;
+		// Setup animation
+		if (gltf.animations && gltf.animations.length > 0) {
+			animationMixers.orc = new AnimationMixer(orc);
+			for (const clip of gltf.animations) {
+				animationMixers.orc.clipAction(clip).play();
 			}
 		}
-		// Scale SplatMesh with - and =
-		if (splat && splatsLoaded) {
-			if (e.key === "-") {
-				splat.scale.multiplyScalar(0.95);
-			}
-			if (e.key === "=" || e.key === "+") {
-				splat.scale.multiplyScalar(1.05);
-			}
-		}
-		console.log(splat.scale);
+
+		boneColliders.orc = createBoneColliders(orc, world);
+		characters.orc = orc;
+
+		console.log("✓ Orc character loaded");
 	});
 
-	// --- Movement controls (WASD) ---
+	// Load Bartender
+	const fbxLoader = new FBXLoader();
+	fbxLoader.load(CONFIG.CHARACTERS.BARTENDER.MODEL, (fbx) => {
+		const bartender = fbx;
+		const config = CONFIG.CHARACTERS.BARTENDER;
+
+		bartender.scale.set(...config.SCALE);
+		bartender.position.set(...config.POSITION);
+		bartender.rotation.y = config.ROTATION;
+		scene.add(bartender);
+
+		setupMaterialsForLighting(bartender, 2.0); // Make bartender brighter
+
+		// Setup animation
+		if (fbx.animations && fbx.animations.length > 0) {
+			animationMixers.bartender = new AnimationMixer(bartender);
+			for (const clip of fbx.animations) {
+				animationMixers.bartender.clipAction(clip).play();
+			}
+		}
+
+		boneColliders.bartender = createBoneColliders(bartender, world);
+		characters.bartender = bartender;
+
+		console.log("✓ Bartender character loaded");
+	});
+
+	// ===== INPUT HANDLING =====
 	const keyState = {};
+	let debugMode = false;
+	const debugVisuals = { orc: [], bartender: [] };
+
+	// Keyboard input
 	window.addEventListener("keydown", (e) => {
 		keyState[e.code] = true;
+
+		// Debug mode toggle
+		if (e.code === "Space") {
+			debugMode = !debugMode;
+			toggleDebugMode();
+		}
 	});
+
 	window.addEventListener("keyup", (e) => {
 		keyState[e.code] = false;
 	});
 
-	const moveVelocity = new THREE.Vector3();
-	function updateMovement(delta) {
-		const speed = 5; // units/sec
-		moveVelocity.set(0, 0, 0);
+	function toggleDebugMode() {
+		if (!environment || !splatMesh || !splatsLoaded) return;
 
-		if (keyState.KeyW) moveVelocity.z += 1;
-		if (keyState.KeyS) moveVelocity.z -= 1;
-		if (keyState.KeyA) moveVelocity.x += 1;
-		if (keyState.KeyD) moveVelocity.x -= 1;
-		// up and down with R and F
-		if (keyState.KeyR) moveVelocity.y += 1;
-		if (keyState.KeyF) moveVelocity.y -= 1;
+		if (debugMode) {
+			// Show collision mesh, hide splats
+			environment.visible = true;
+			scene.remove(splatMesh);
 
-		if (moveVelocity.lengthSq() > 0) {
-			moveVelocity.normalize().multiplyScalar(speed * delta);
+			// Visualize bone colliders
+			const characters = ["orc", "bartender"];
+			for (let index = 0; index < characters.length; index++) {
+				const character = characters[index];
+				if (boneColliders[character] && debugVisuals[character].length === 0) {
+					const color = index === 0 ? 0xff00ff : 0x00ffff;
+					for (const { bone } of boneColliders[character]) {
+						const pos = new THREE.Vector3();
+						bone.getWorldPosition(pos);
+
+						const sphere = new THREE.Mesh(
+							new THREE.SphereGeometry(CONFIG.BONE_COLLIDER_RADIUS, 16, 16),
+							new THREE.MeshBasicMaterial({ color, wireframe: true }),
+						);
+						sphere.position.copy(pos);
+						scene.add(sphere);
+						debugVisuals[character].push({ sphere, bone });
+					}
+				}
+			}
+		} else {
+			// Hide collision mesh, show splats
+			environment.visible = false;
+			scene.add(splatMesh);
+
+			// Remove debug visuals
+			for (const character of ["orc", "bartender"]) {
+				for (const { sphere } of debugVisuals[character]) {
+					scene.remove(sphere);
+				}
+				debugVisuals[character] = [];
+			}
+		}
+	}
+
+	// Movement
+	function updateMovement(deltaTime) {
+		if (!controls.isLocked) return;
+
+		const velocity = new THREE.Vector3();
+
+		if (keyState.KeyW) velocity.z += 1;
+		if (keyState.KeyS) velocity.z -= 1;
+		if (keyState.KeyA) velocity.x += 1;
+		if (keyState.KeyD) velocity.x -= 1;
+		if (keyState.KeyR) velocity.y += 1;
+		if (keyState.KeyF) velocity.y -= 1;
+
+		if (velocity.lengthSq() > 0) {
+			velocity.normalize().multiplyScalar(CONFIG.MOVE_SPEED * deltaTime);
 
 			const forward = new THREE.Vector3();
 			camera.getWorldDirection(forward);
-			forward.y = 0; // stay horizontal
+			forward.y = 0;
 			forward.normalize();
 
 			const right = new THREE.Vector3();
 			right.crossVectors(camera.up, forward).normalize();
 
-			camera.position.addScaledVector(forward, moveVelocity.z);
-			camera.position.addScaledVector(right, moveVelocity.x);
-			// use world up for up
-			camera.position.addScaledVector(camera.up, moveVelocity.y);
+			camera.position.addScaledVector(forward, velocity.z);
+			camera.position.addScaledVector(right, velocity.x);
+			camera.position.addScaledVector(camera.up, velocity.y);
 		}
 	}
 
-	// --- Shooting balls ---
+	// ===== PROJECTILE SYSTEM =====
 	const projectiles = [];
-	function shoot() {
-		const radius = 0.2;
-		const geo = new THREE.SphereGeometry(radius, 16, 16);
-		const mat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
-		const mesh = new THREE.Mesh(geo, mat);
 
-		const origin = new THREE.Vector3().copy(camera.position);
+	function shootProjectile() {
+		const geometry = new THREE.SphereGeometry(CONFIG.PROJECTILE_RADIUS, 16, 16);
+		const material = new THREE.MeshStandardMaterial({ color: 0xff4444 });
+		const mesh = new THREE.Mesh(geometry, material);
+
+		const origin = camera.position.clone();
 		mesh.position.copy(origin);
 		scene.add(mesh);
 
-		const rbDesc = RAPIER.RigidBodyDesc.dynamic().setTranslation(
+		// Create physics body
+		const bodyDesc = RAPIER.RigidBodyDesc.dynamic().setTranslation(
 			origin.x,
 			origin.y,
 			origin.z,
 		);
-		const body = world.createRigidBody(rbDesc);
-		const collDesc = RAPIER.ColliderDesc.ball(radius).setRestitution(0.9);
-		const collider = world.createCollider(collDesc, body);
+		const body = world.createRigidBody(bodyDesc);
+		const colliderDesc = RAPIER.ColliderDesc.ball(
+			CONFIG.PROJECTILE_RADIUS,
+		).setRestitution(CONFIG.PROJECTILE_RESTITUTION);
+		world.createCollider(colliderDesc, body);
 
-		// Shoot in camera direction
-		const dir = new THREE.Vector3();
-		camera.getWorldDirection(dir);
-		dir.normalize();
-		const speed = 15;
-		body.setLinvel(
-			{ x: dir.x * speed, y: dir.y * speed, z: dir.z * speed },
-			true,
-		);
+		// Launch projectile
+		const direction = new THREE.Vector3();
+		camera.getWorldDirection(direction);
+		direction.normalize();
+
+		const velocity = direction.multiplyScalar(CONFIG.PROJECTILE_SPEED);
+		body.setLinvel(velocity, true);
 
 		projectiles.push({
 			mesh,
 			body,
-			collider,
-			lastVelocity: new THREE.Vector3(
-				dir.x * speed,
-				dir.y * speed,
-				dir.z * speed,
-			),
+			lastVelocity: velocity.clone(),
 		});
 	}
 
+	// Shooting on click
 	window.addEventListener("click", () => {
-		if (controls.isLocked) shoot();
+		if (controls.isLocked) shootProjectile();
 	});
 
-	// --- Animation loop ---
-	let prevTime = performance.now();
-	let orc = null;
-	let orcMixer = null;
-	let orcBoneColliders = [];
-	let bartender = null;
-	let bartenderMixer = null;
-	let bartenderBoneColliders = [];
+	// ===== ANIMATION LOOP =====
+	let previousTime = performance.now();
 
-	// Load orc.glb animated character
-	const gltfLoader = new GLTFLoader();
-	gltfLoader.load("orc.glb", (gltf) => {
-		orc = gltf.scene;
-		// Rotate 45 degrees to the left (Y axis) and move back 2 units in X, Y, Z
-		orc.rotation.y = Math.PI / 2;
-		orc.scale.set(1.5, 1.5, 1.5);
-		orc.position.set(-4, -1.5, 2);
-		scene.add(orc);
-
-		// Adjust orc materials to respond better to lighting
-		orc.traverse((child) => {
-			if (child.isMesh && child.material) {
-				// Handle both single material and material arrays
-				const materials = Array.isArray(child.material)
-					? child.material
-					: [child.material];
-				const newMaterials = [];
-
-				for (let i = 0; i < materials.length; i++) {
-					const material = materials[i];
-
-					// Remove any emissive properties that might make it glow
-					if (material.emissive) {
-						material.emissive.setHex(0x000000);
-					}
-					if (material.emissiveIntensity !== undefined) {
-						material.emissiveIntensity = 0;
-					}
-
-					// Ensure material responds to lighting
-					if (material.type === "MeshBasicMaterial") {
-						// Convert basic materials to standard materials for lighting
-						const newMaterial = new THREE.MeshStandardMaterial({
-							color: material.color,
-							map: material.map,
-							normalMap: material.normalMap,
-							roughness: 0.8,
-							metalness: 0.1,
-						});
-						newMaterials.push(newMaterial);
-					} else {
-						// Adjust material properties for better lighting response
-						if (material.roughness !== undefined) {
-							material.roughness = 0.8; // More matte finish
-						}
-						if (material.metalness !== undefined) {
-							material.metalness = 0.1; // Less metallic
-						}
-
-						// Ensure material is not transparent unless intended
-						if (material.transparent && material.opacity === 1) {
-							material.transparent = false;
-						}
-
-						newMaterials.push(material);
-					}
-				}
-
-				// Update the mesh material reference
-				if (Array.isArray(child.material)) {
-					child.material = newMaterials;
-				} else {
-					child.material = newMaterials[0];
-				}
-			}
-		});
-
-		// Animation setup
-		if (gltf.animations && gltf.animations.length > 0) {
-			orcMixer = new AnimationMixer(orc);
-			for (const clip of gltf.animations) {
-				orcMixer.clipAction(clip).play();
-			}
-		}
-
-		// Finer per-frame colliders: attach a small sphere collider to each bone
-		orcBoneColliders = [];
-		orc.traverse((child) => {
-			if (child.isBone) {
-				// Create a small sphere collider for each bone
-				const bonePos = new THREE.Vector3();
-				child.getWorldPosition(bonePos);
-				const colliderDesc = RAPIER.ColliderDesc.ball(0.3); // small sphere
-				const bodyDesc =
-					RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-						bonePos.x,
-						bonePos.y,
-						bonePos.z,
-					);
-				const body = world.createRigidBody(bodyDesc);
-				world.createCollider(colliderDesc, body);
-				orcBoneColliders.push({ bone: child, body });
-			}
-		});
-	});
-
-	// Load bartending character
-	const fbxLoader = new FBXLoader();
-	fbxLoader.load("Bartending.fbx", (fbx) => {
-		bartender = fbx;
-		// Scale and position the bartender
-		bartender.scale.set(0.01, 0.01, 0.01); // FBX files are often much larger, so scale down
-		bartender.position.set(1, -1.5, 3); // Position opposite side from orc
-		bartender.rotation.y = -Math.PI / 2; // Rotate to face the center
-		scene.add(bartender);
-
-		// Animation setup
-		if (fbx.animations && fbx.animations.length > 0) {
-			bartenderMixer = new AnimationMixer(bartender);
-			for (const clip of fbx.animations) {
-				bartenderMixer.clipAction(clip).play();
-			}
-		}
-
-		// Create collision spheres for bartender bones
-		bartenderBoneColliders = [];
-		bartender.traverse((child) => {
-			if (child.isBone) {
-				// Create a small sphere collider for each bone
-				const bonePos = new THREE.Vector3();
-				child.getWorldPosition(bonePos);
-				const colliderDesc = RAPIER.ColliderDesc.ball(0.3); // small sphere
-				const bodyDesc =
-					RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-						bonePos.x,
-						bonePos.y,
-						bonePos.z,
-					);
-				const body = world.createRigidBody(bodyDesc);
-				world.createCollider(colliderDesc, body);
-				bartenderBoneColliders.push({ bone: child, body });
-			}
-		});
-
-		// Adjust bartender materials to respond better to lighting (same as orc)
-		bartender.traverse((child) => {
-			if (child.isMesh && child.material) {
-				// Handle both single material and material arrays
-				const materials = Array.isArray(child.material) ? child.material : [child.material];
-				const newMaterials = [];
-				
-				for (let i = 0; i < materials.length; i++) {
-					const material = materials[i];
-					
-					// Remove any emissive properties that might make it glow
-					if (material.emissive) {
-						material.emissive.setHex(0x000000);
-					}
-					if (material.emissiveIntensity !== undefined) {
-						material.emissiveIntensity = 0;
-					}
-					
-					// Ensure material responds to lighting
-					if (material.type === 'MeshBasicMaterial') {
-						// Convert basic materials to standard materials for lighting
-						const newMaterial = new THREE.MeshStandardMaterial({
-							color: material.color,
-							map: material.map,
-							normalMap: material.normalMap,
-							roughness: 0.8,
-							metalness: 0.1
-						});
-						newMaterials.push(newMaterial);
-					} else {
-						// Adjust material properties for better lighting response
-						if (material.roughness !== undefined) {
-							material.roughness = 0.8; // More matte finish
-						}
-						if (material.metalness !== undefined) {
-							material.metalness = 0.1; // Less metallic
-						}
-						
-						// Make bartender 2x brighter by adjusting color
-						if (material.color) {
-							const currentColor = material.color.clone();
-							currentColor.multiplyScalar(2.0); // Make 2x brighter
-							material.color = currentColor;
-						}
-						
-						// Ensure material is not transparent unless intended
-						if (material.transparent && material.opacity === 1) {
-							material.transparent = false;
-						}
-						
-						newMaterials.push(material);
-					}
-				}
-				
-				// Update the mesh material reference
-				if (Array.isArray(child.material)) {
-					child.material = newMaterials;
-				} else {
-					child.material = newMaterials[0];
-				}
-			}
-		});
-	});
-
-	function animate(now) {
+	function animate(currentTime) {
 		requestAnimationFrame(animate);
-		const delta = (now - prevTime) / 1000;
-		prevTime = now;
+		const deltaTime = (currentTime - previousTime) / 1000;
+		previousTime = currentTime;
 
-		if (controls.isLocked) updateMovement(delta);
+		// Update movement
+		updateMovement(deltaTime);
 
-		// Update orc voice cooldown
-		if (orcVoiceCooldown > 0) {
-			orcVoiceCooldown -= delta;
+		// Update voice cooldowns
+		for (const key of Object.keys(voiceCooldowns)) {
+			if (voiceCooldowns[key] > 0) voiceCooldowns[key] -= deltaTime;
 		}
 
-		// Update bartender voice cooldown
-		if (bartenderVoiceCooldown > 0) {
-			bartenderVoiceCooldown -= delta;
-		}
-
-		// Step physics
+		// Step physics simulation
 		world.step();
 
-		// Sync dynamic objects with physics bodies and detect bounces
+		// Update projectiles and detect collisions
 		for (const projectile of projectiles) {
 			const pos = projectile.body.translation();
 			const rot = projectile.body.rotation();
+
 			projectile.mesh.position.set(pos.x, pos.y, pos.z);
 			projectile.mesh.quaternion.set(rot.x, rot.y, rot.z, rot.w);
 
-			// Detect bounces by monitoring velocity changes
-			const currentVelocity = projectile.body.linvel();
-			const currentVelVec = new THREE.Vector3(
-				currentVelocity.x,
-				currentVelocity.y,
-				currentVelocity.z,
+			// Bounce detection through velocity change
+			const currentVelocity = new THREE.Vector3(
+				projectile.body.linvel().x,
+				projectile.body.linvel().y,
+				projectile.body.linvel().z,
 			);
-			const lastVelVec = projectile.lastVelocity;
 
-			// Check if velocity direction changed significantly (indicating a bounce)
-			const velocityChange = currentVelVec.clone().sub(lastVelVec);
-			if (velocityChange.length() > 2.0) { // Threshold for bounce detection
-				console.log(`Collider mesh bounce at position: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)})`);
-				console.log(`Velocity change: (${velocityChange.x.toFixed(2)}, ${velocityChange.y.toFixed(2)}, ${velocityChange.z.toFixed(2)})`);
-				playBounceSound(pos, currentVelVec);
-				
-				// Check if projectile hit the orc
-				const projectilePos = new THREE.Vector3(pos.x, pos.y, pos.z);
-				for (const { bone } of orcBoneColliders) {
-					const bonePos = new THREE.Vector3();
-					bone.getWorldPosition(bonePos);
-					const distance = projectilePos.distanceTo(bonePos);
-					
-					// If projectile is close to orc bone, trigger voice line
-					if (distance < 0.8) { // Collision threshold
-						playOrcVoiceLine();
-						break; // Only play one voice line per hit
-					}
-				}
-				
-				// Check if projectile hit the bartender
-				for (const { bone } of bartenderBoneColliders) {
-					const bonePos = new THREE.Vector3();
-					bone.getWorldPosition(bonePos);
-					const distance = projectilePos.distanceTo(bonePos);
-					
-					// If projectile is close to bartender bone, trigger voice line
-					if (distance < 0.8) { // Collision threshold
-						playBartenderVoiceLine();
-						break; // Only play one voice line per hit
+			const velocityChange = currentVelocity
+				.clone()
+				.sub(projectile.lastVelocity);
+			if (velocityChange.length() > CONFIG.BOUNCE_DETECTION_THRESHOLD) {
+				const position = new THREE.Vector3(pos.x, pos.y, pos.z);
+				playBounceSound(position, currentVelocity);
+
+				// Check character hits
+				for (const character of ["orc", "bartender"]) {
+					if (boneColliders[character]) {
+						const hit = boneColliders[character].some(({ bone }) => {
+							const bonePos = new THREE.Vector3();
+							bone.getWorldPosition(bonePos);
+							return (
+								position.distanceTo(bonePos) < CONFIG.CHARACTER_HIT_DISTANCE
+							);
+						});
+
+						if (hit) playVoiceLine(character);
 					}
 				}
 			}
 
-			// Update last velocity
-			projectile.lastVelocity.copy(currentVelVec);
+			projectile.lastVelocity.copy(currentVelocity);
 		}
 
-		// Update orc animation
-		if (orcMixer) {
-			orcMixer.update(delta);
+		// Update character animations
+		for (const mixer of Object.values(animationMixers)) {
+			mixer?.update(deltaTime);
 		}
-		// Update orc bone colliders to follow bones
-		if (orcBoneColliders.length > 0) {
-			for (const { bone, body } of orcBoneColliders) {
+
+		// Update bone colliders to follow animated bones
+		for (const [character, colliders] of Object.entries(boneColliders)) {
+			for (const { bone, body } of colliders) {
 				const pos = new THREE.Vector3();
 				bone.getWorldPosition(pos);
 				body.setTranslation({ x: pos.x, y: pos.y, z: pos.z }, true);
 			}
 		}
 
-		// Update bartender animation
-		if (bartenderMixer) {
-			bartenderMixer.update(delta);
-		}
-		// Update bartender bone colliders to follow bones
-		if (bartenderBoneColliders.length > 0) {
-			for (const { bone, body } of bartenderBoneColliders) {
-				const pos = new THREE.Vector3();
-				bone.getWorldPosition(pos);
-				body.setTranslation({ x: pos.x, y: pos.y, z: pos.z }, true);
+		// Update debug visuals
+		if (debugMode) {
+			for (const character of ["orc", "bartender"]) {
+				for (const { sphere, bone } of debugVisuals[character]) {
+					bone.getWorldPosition(sphere.position);
+				}
 			}
-		}
 
-		// Update collider visuals if in debug mode
-		if (debugMode && colliderVisuals.length > 0) {
-			for (const { sphere, bone } of colliderVisuals) {
-				bone.getWorldPosition(sphere.position);
-			}
-		}
-		// Update bartender collider visuals if in debug mode
-		if (debugMode && bartenderColliderVisuals.length > 0) {
-			for (const { sphere, bone } of bartenderColliderVisuals) {
-				bone.getWorldPosition(sphere.position);
-			}
-		}
-		// Update TransformControls if present
-		if (orcTransformControls) {
-			orcTransformControls.update();
+
 		}
 
 		renderer.render(scene, camera);
 	}
-	animate(prevTime);
 
-	// Handle resize
+	// ===== WINDOW RESIZE HANDLING =====
 	window.addEventListener("resize", () => {
 		camera.aspect = window.innerWidth / window.innerHeight;
 		camera.updateProjectionMatrix();
 		renderer.setSize(window.innerWidth, window.innerHeight);
 	});
+
+	// Start the animation loop
+	animate(previousTime);
+	console.log("🚀 Tavern demo initialized successfully!");
 }
 
+// Initialize the application
 init();
