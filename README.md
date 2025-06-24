@@ -1,5 +1,7 @@
 # Interactive Tavern Demo
 
+Try it out: https://spark-physics.netlify.app/
+
 A showcase of **Spark** (Gaussian Splats) + **Rapier Physics** + **Three.js** integration, demonstrating how to combine splat rendering with a collider mesh for simple physics.
 
 This demo serves as an example of:
