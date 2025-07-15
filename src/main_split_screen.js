@@ -2,7 +2,7 @@
  * Interactive Tavern Demo - Three.js + Rapier Physics + Gaussian Splats (Split‑Screen Edition)
  * -----------------------------------------------------------------------------
  * Left view: first‑person (PointerLock) controlled by WASD/mouse.
- * Right view: camera positioned 1m to the right of left camera with same rotation.
+ * Right view: camera positioned to the right of left camera with same rotation.
  */
 
 import * as RAPIER from "@dimforge/rapier3d-compat";
@@ -391,7 +391,11 @@ async function init() {
 
   // ---------- Animation Loop ----------
   let prev = performance.now();
-  const rightCameraOffset = 1; // 1 meter to the right
+  // Stereoscopic 3D camera separation for glasses-free viewing at 40cm
+  // Using 1/30 rule: camera separation = IPD * (virtual distance / viewing distance)
+  // For virtual world scale where 1 unit = 1 meter:
+  // Assuming average IPD of 63mm and comfortable convergence at 2-3m virtual distance
+  const rightCameraOffset = 0.063 * (2.5 / 0.4); // ~0.394 units (39.4cm in virtual space)
 
   function animate(t) {
     requestAnimationFrame(animate);
