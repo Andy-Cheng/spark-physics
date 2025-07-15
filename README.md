@@ -45,3 +45,12 @@ Build for production:
 npm run build
 npm run preview    # locally preview production build
 ``` 
+
+
+## Switch to split screen version
+To view in glass-free 3D display, change to /src/main_split_screen.js in index.html
+
+
+<video width="100%" controls>
+  <source src="split-screen-spark.mp4" type="video/mp4">
+</video>
